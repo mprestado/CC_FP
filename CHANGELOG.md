@@ -13,6 +13,7 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `MARC JUSTIN N. PRESTADO` - Added `report/cost-estimate.md` on 2026-05-14: architecture summary, itemized SKU breakdown for App Service S1 (2 instances), Azure SQL S0, and Storage_LRS, monthly total estimate, and four cost optimization strategies with estimated savings.
 - `CARL GERALD J. PARRO` - Added `src/package.json` on 2026-05-14: declared `express`, `mssql`, and `@azure/storage-blob` dependencies, set Node 20+ engine, defined `dev` (watch mode) and `start` scripts.
 - `CARL GERALD J. PARRO` - Added `src/server.js` on 2026-05-14: Express application with product catalog, cookie-backed cart, checkout (transactional SQL writes with row-level UPDLOCK), `/orders` history view, `/health` probe (returns SQL status + App Service instance id), in-memory fallback for local development.
+- `JAVE A. BACSAIN` - Added `deployment/deploy.azcli` on 2026-05-14: Azure CLI IaC script provisioning Resource Group, Storage Account + Blob container, Azure SQL Server + Database, App Service Plan (Standard S1, 2 instances) + Web App with Managed Identity, autoscale profile (CPU 70/30, min 2 max 4). SQL password sourced from `SQL_ADMIN_PASSWORD` env var, never hardcoded.
 <!-- INSERT_ADDED -->
 
 ### Changed

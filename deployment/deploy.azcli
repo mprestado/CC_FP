@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# GenericMart Cloud - Azure CLI deployment script (Scenario B)
+# Services deployed: Resource Group, App Service Plan + Web App (2 instances),
+# Azure SQL Server + Database, Storage Account + Blob container.
+# Optimizations: Autoscale rules, Managed Identity (security control).
+
+set -euo pipefail
+
+# =========================
+# Project variables (EDIT)
+# =========================
+LOCATION="southeastasia"
+RG="rg-genericmart-cloud"
+
+APP_PLAN="asp-genericmart"
+WEBAPP="app-genericmart-$RANDOM$RANDOM"
+
+STORAGE="stteknikk$RANDOM$RANDOM"
+CONTAINER="products"
+
+SQL_SERVER="sql-genericmart-$RANDOM$RANDOM"
+SQL_DB="sqldb-genericmart"
+SQL_ADMIN_USER="sqladminuser"
+
+# Never hardcode passwords. Provide via env:
+#   export SQL_ADMIN_PASSWORD='YourStrongP@ssw0rd!'
+SQL_ADMIN_PASSWORD="${SQL_ADMIN_PASSWORD:-}"
+if [[ -z "$SQL_ADMIN_PASSWORD" ]]; then
+  echo "ERROR: SQL_ADMIN_PASSWORD env var not set." >&2
+  exit 1
+fi
+
+echo "Deploying:"
+echo "  RG=$RG  LOCATION=$LOCATION"
+echo "  WEBAPP=$WEBAPP  PLAN=$APP_PLAN"
+echo "  SQL_SERVER=$SQL_SERVER  DB=$SQL_DB"
+echo "  STORAGE=$STORAGE  CONTAINER=$CONTAINER"
+echo
+
+# -------------------------
+# Resource Group
+# -------------------------
+az group create -n "$RG" -l "$LOCATION" 1>/dev/null
+
+# -------------------------
+# Storage Account + Blob container (product images)
+# -------------------------
+az storage account create \
+  -n "$STORAGE" -g "$RG" -l "$LOCATION" \
+  --sku Standard_LRS --kind StorageV2 \
+  --allow-blob-public-access true \
+  1>/dev/null
+
+STORAGE_KEY="$(az storage account keys list -g "$RG" -n "$STORAGE" --query '[0].value' -o tsv)"
+
+az storage container create \
+  --name "$CONTAINER" \
+  --account-name "$STORAGE" \
+  --account-key "$STORAGE_KEY" \
+  --public-access blob \
+  1>/dev/null
+
+BLOB_BASE="https://${STORAGE}.blob.core.windows.net/${CONTAINER}"
+
+# -------------------------
+# Azure SQL Server + Database
+# -------------------------
+az sql server create \
+  -g "$RG" -n "$SQL_SERVER" -l "$LOCATION" \
+  -u "$SQL_ADMIN_USER" -p "$SQL_ADMIN_PASSWORD" \
+  1>/dev/null
+
+# Allow Azure services (App Service) to reach SQL
+az sql server firewall-rule create \
+  -g "$RG" -s "$SQL_SERVER" -n "AllowAzureServices" \
+  --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 \
+  1>/dev/null
+
+az sql db create \
+  -g "$RG" -s "$SQL_SERVER" -n "$SQL_DB" \
+  --service-objective S0 \
+  1>/dev/null
+
+SQL_FQDN="$(az sql server show -g "$RG" -n "$SQL_SERVER" --query fullyQualifiedDomainName -o tsv)"
+
+# -------------------------
+# App Service Plan + Web App (2 instances)
+# -------------------------
+az appservice plan create \
+  -g "$RG" -n "$APP_PLAN" \
+  --is-linux --sku S1 \
+  1>/dev/null
+
+az appservice plan update \
+  -g "$RG" -n "$APP_PLAN" \
+  --number-of-workers 2 \
+  1>/dev/null
+
+az webapp create \
+  -g "$RG" -p "$APP_PLAN" -n "$WEBAPP" \
+  --runtime "NODE:20-lts" \
+  1>/dev/null
+
+# Managed Identity (security control - Deliverable 2 row 4)
+az webapp identity assign -g "$RG" -n "$WEBAPP" 1>/dev/null
+
+# App settings
+az webapp config appsettings set \
+  -g "$RG" -n "$WEBAPP" \
+  --settings \
+    "SQL_SERVER=$SQL_FQDN" \
+    "SQL_DATABASE=$SQL_DB" \
+    "SQL_USER=$SQL_ADMIN_USER" \
+    "SQL_PASSWORD=$SQL_ADMIN_PASSWORD" \
+    "STORAGE_BLOB_BASE=$BLOB_BASE" \
+    "WEBSITE_NODE_DEFAULT_VERSION=~20" \
+    "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
+  1>/dev/null
+
+az webapp config set \
+  -g "$RG" -n "$WEBAPP" \
+  --startup-file "node server.js" \
+  1>/dev/null
+
+# -------------------------
+# Autoscale rules (Optimization #1 - Scalability)
+# -------------------------
+PLAN_ID="$(az appservice plan show -g "$RG" -n "$APP_PLAN" --query id -o tsv)"
+
+az monitor autoscale create \
+  -g "$RG" \
+  --resource "$PLAN_ID" \
+  --resource-type "Microsoft.Web/serverfarms" \
+  -n "as-$APP_PLAN" \
+  --min-count 2 --max-count 4 --count 2 \
+  1>/dev/null
+
+az monitor autoscale rule create \
+  -g "$RG" --autoscale-name "as-$APP_PLAN" \
+  --condition "Percentage CPU > 70 avg 5m" \
+  --scale out 1 \
+  1>/dev/null
+
+az monitor autoscale rule create \
+  -g "$RG" --autoscale-name "as-$APP_PLAN" \
+  --condition "Percentage CPU < 30 avg 10m" \
+  --scale in 1 \
+  1>/dev/null
+
+APP_URL="https://${WEBAPP}.azurewebsites.net"
+
+echo
+echo "==============================="
+echo "DEPLOYMENT COMPLETE"
+echo "==============================="
+echo "Resource Group : $RG"
+echo "Web App URL    : $APP_URL"
+echo "SQL Server     : $SQL_FQDN"
+echo "Storage URL    : $BLOB_BASE"
+echo
+echo "Next: deploy app code with:"
+echo "  cd ../src"
+echo "  npm install --omit=dev"
+echo "  zip -r app.zip ."
+echo "  az webapp deploy -g $RG -n $WEBAPP --src-path app.zip --type zip"
